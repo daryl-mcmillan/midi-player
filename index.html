@@ -1,0 +1,182 @@
+<html>
+<head>
+<title>MIDI player</title>
+</head>
+
+<body>
+<script>
+function getMessageLength( status ) {
+    switch( status >> 4 ) {
+        case 0b1000: // note off
+        case 0b1001: // note on
+        case 0b1010: // key pressure
+        case 0b1011: // control change
+            return 3;
+        case 0b1100: // program change
+        case 0b1101: // channel pressure
+            return 2;
+        case 0b1110:
+            return 3;
+        default:
+            break;
+    }
+    switch( status ) {
+        case 0b11110000: // systex until terminator
+            return null;
+        case 0b11110001: // undefined
+            return 1;
+        case 0b11110010: // song position
+            return 3;
+        case 0b11110011: // song select
+            return 2;
+        case 0b11110111: // sysex continuation
+            return null;
+        case 0b11111111: // meta-event
+            return null;
+        default:
+            return 1;
+    }
+}
+function sleep(ms) {
+    return new Promise( resolve => setTimeout(resolve,ms) );
+}
+async function * readAll( stream ) {
+    const reader = stream.getReader();
+    for( ;; ) {
+        const readResult = await reader.read();
+        if( readResult.done ) {
+            return;
+        }
+        for( const item of readResult.value ) {
+            yield item;
+        }
+    }
+}
+function getReader( stream ) {
+    var reader = readAll( stream );
+    return {
+        done: false,
+        position: 0,
+        next: async function() {
+            const item = await reader.next();
+            if( item.done ) {
+                this.done = true;
+                return null;
+            } else {
+                this.position++;
+                return item.value;
+            }
+        },
+        readChunkType: async function() {
+            return String.fromCharCode(await this.next())
+                + String.fromCharCode(await this.next())
+                + String.fromCharCode(await this.next())
+                + String.fromCharCode(await this.next());
+        },
+        readInt16: async function() {
+            return (await this.next()) << 8 | (await this.next());
+        },
+        readInt32: async function() {
+            return (await this.next()) << 24
+                | (await this.next()) << 16
+                | (await this.next()) << 8
+                | (await this.next());
+        },
+        skip: async function( count ) {
+            while( count ) {
+                await this.next();
+                count --;
+            }
+        },
+        readQuantity: async function() {
+            var val = 0;
+            for( ;; ) {
+                var read = await this.next();
+                var readVal = read & 0x7F;
+                var hasMore = read & 0x80;
+                val = (val << 7) | readVal;
+                if( !hasMore ) {
+                    break;
+                }
+            }
+            return val;
+        }
+    };
+}
+var midiOutput = null;
+async function midiSetup() {
+    const midi = await navigator.requestMIDIAccess();
+    var midiOutputs = [];
+    for( const o of midi.outputs.values() ) {
+        midiOutputs.push( o );
+    }
+    console.log( midiOutputs );
+    midiOutput = midiOutputs[1];
+    await midiOutput.open();
+}
+function sendMidi( message ) {
+    if( midiOutput !== null ) {
+        midiOutput.send( message );
+    }
+}
+midiSetup();
+var filePicker = document.createElement("input");
+filePicker.type = "file";
+filePicker.onchange = async function() {
+    
+    var reader = getReader( filePicker.files[0].stream() );
+    for( ;; ) {
+        const type = await reader.readChunkType();
+        const length = await reader.readInt32();
+        console.log( {type:type, length: length} );
+        if( type !== 'MTrk' ) {
+            await reader.skip( length );
+            continue;
+        }
+        var lastStatus = null;
+        var trackEndPosition = reader.position + length;
+        while( !reader.done && reader.position < trackEndPosition ) {
+            const delay = await reader.readQuantity();
+            console.log( {delay:delay} );
+            if( delay ) {
+                await sleep( delay * 1.5 );
+            }
+            var message = [];
+            var status = await reader.next();
+            if( status === 0xFF ) {
+                // skip meta-events
+                console.log( "skipping meta-event" );
+                await reader.next();
+                var eventDataLength = await reader.readQuantity();
+                await reader.skip( eventDataLength );
+                continue;
+            }
+            if( status & 0x80 ) {
+                message.push( status );
+                lastStatus = status;
+            } else {
+                message.push( lastStatus );
+                message.push( status );
+                status = lastStatus;
+            }
+            var messageLength = getMessageLength(status);
+            if( messageLength === null ) {
+                messageLength = await reader.readQuantity();
+            }
+            while( message.length < messageLength ) {
+                message.push( await reader.next() );
+            }
+            console.log( message );
+            if( message[0] != 0xff && message[0] != 0xf7 && message[0] != 0xf0 ) {
+                sendMidi( message );
+            }
+        }
+        if( reader.done ) {
+            break;
+        }
+    }
+};
+document.body.appendChild(filePicker);
+</script>
+</body>
+</html>
