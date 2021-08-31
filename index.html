@@ -125,7 +125,7 @@ filePicker.type = "file";
 filePicker.onchange = async function() {
     
     var reader = getReader( filePicker.files[0].stream() );
-    for( ;; ) {
+    while( !reader.done ) {
         const type = await reader.readChunkType();
         const length = await reader.readInt32();
         console.log( {type:type, length: length} );
