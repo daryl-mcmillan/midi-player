@@ -114,9 +114,9 @@ async function midiSetup() {
     midiOutput = midiOutputs[1];
     await midiOutput.open();
 }
-function sendMidi( message ) {
+function sendMidi( message, startTime ) {
     if( midiOutput !== null ) {
-        midiOutput.send( message );
+        midiOutput.send( message, startTime );
     }
 }
 midiSetup();
@@ -124,6 +124,8 @@ var filePicker = document.createElement("input");
 filePicker.type = "file";
 filePicker.onchange = async function() {
     
+    var bufferTime = 1000;
+    var startTime = window.performance.now() + bufferTime;
     var reader = getReader( filePicker.files[0].stream() );
     while( !reader.done ) {
         const type = await reader.readChunkType();
@@ -136,10 +138,11 @@ filePicker.onchange = async function() {
         var lastStatus = null;
         var trackEndPosition = reader.position + length;
         while( !reader.done && reader.position < trackEndPosition ) {
-            const delay = await reader.readQuantity();
-            console.log( {delay:delay} );
-            if( delay ) {
-                await sleep( delay * 1.5 );
+            const delay = (await reader.readQuantity()) * 1.5;
+            startTime += delay;
+            const pauseTime = startTime - window.performance.now() - bufferTime;
+            if( pauseTime > 0 ) {
+                await sleep( pauseTime );
             }
             var message = [];
             var status = await reader.next();
@@ -168,7 +171,7 @@ filePicker.onchange = async function() {
             }
             console.log( message );
             if( message[0] != 0xff && message[0] != 0xf7 && message[0] != 0xf0 ) {
-                sendMidi( message );
+                sendMidi( message, startTime );
             }
         }
         if( reader.done ) {
